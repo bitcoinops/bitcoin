@@ -1867,6 +1867,18 @@ static UniValue getblockstats(const JSONRPCRequest& request)
             "  \"txs\": xxxxx,             (numeric) The number of transactions (excluding coinbase)\n"
             "  \"utxo_increase\": xxxxx,   (numeric) The increase/decrease in the number of unspent outputs\n"
             "  \"utxo_size_inc\": xxxxx,   (numeric) The increase/decrease in size for the utxo index (not discounting op_return and similar)\n"
+            "  \"nested_p2wpkh_outputs_spent\": xxxxx,   (numeric) The total number of nested P2WPKH outputs spent\n"
+            "  \"nested_p2wsh_outputs_spent\": xxxxx,   (numeric) The total number of nested P2WSH outputs spent\n"
+            "  \"native_p2wpkh_outputs_spent\": xxxxx,   (numeric) The total number of native P2WPKH outputs spent\n"
+            "  \"native_p2wsh_outputs_spent\": xxxxx,   (numeric) The total number of native P2WSH outputs spent\n"
+            "  \"txs_spending_nested_p2wpkh_outputs\": xxxxx,   (numeric) The total number of transactions spending nested P2WPKH outputs\n"
+            "  \"txs_spending_nested_p2wsh_outputs\": xxxxx,   (numeric) The total number of transactions spending nested P2WSH outputs\n"
+            "  \"txs_spending_native_p2wpkh_outputs\": xxxxx,   (numeric) The total number of transactions spending native P2WPKH outputs\n"
+            "  \"txs_spending_native_p2wsh_outputs\": xxxxx,   (numeric) The total number of transactions spending native P2WSH outputs\n"
+            "  \"new_p2wpkh_outputs\": xxxxx,   (numeric) The total number of new P2WPKH outputs\n"
+            "  \"new_p2wsh_outputs\": xxxxx,   (numeric) The total number of new P2WSH outputs\n"
+            "  \"txs_creating_p2wpkh_outputs\": xxxxx,   (numeric) The total number of transactions creating new P2WPKH outputs\n"
+            "  \"txs_creating_p2wsh_outputs\": xxxxx,   (numeric) The total number of transactions new P2WSH outputs\n"
             "}\n"
                 },
                 RPCExamples{
@@ -1948,17 +1960,51 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     std::vector<CAmount> fee_array;
     std::vector<std::pair<CAmount, int64_t>> feerate_array;
     std::vector<int64_t> txsize_array;
+    int64_t native_p2wpkh_outputs_spent = 0;
+    int64_t native_p2wsh_outputs_spent = 0;
+    int64_t nested_p2wpkh_outputs_spent = 0;
+    int64_t nested_p2wsh_outputs_spent = 0;
+    int64_t txs_spending_nested_p2wpkh_outputs = 0;
+    int64_t txs_spending_nested_p2wsh_outputs = 0;
+    int64_t txs_spending_native_p2wpkh_outputs = 0;
+    int64_t txs_spending_native_p2wsh_outputs = 0;
+    int64_t new_p2wpkh_outputs = 0;
+    int64_t new_p2wsh_outputs = 0;
+    int64_t txs_creating_p2wpkh_outputs = 0;
+    int64_t txs_creating_p2wsh_outputs = 0;
 
     for (size_t i = 0; i < block.vtx.size(); ++i) {
         const auto& tx = block.vtx.at(i);
         outputs += tx->vout.size();
 
+        bool creates_p2wpkh_output = false;
+        bool creates_p2wsh_output = false;
+
         CAmount tx_total_out = 0;
         if (loop_outputs) {
             for (const CTxOut& out : tx->vout) {
+                CScript scriptPubKey = out.scriptPubKey;
+
+                // Check what kinds of output is being created.
+                if (scriptPubKey.IsPayToWitnessScriptHash()) {
+                    ++new_p2wsh_outputs;
+                    creates_p2wsh_output = true;
+                } else if (scriptPubKey.IsNativePayToWitnessPubKeyHash()) {
+                    ++new_p2wpkh_outputs;
+                    creates_p2wpkh_output = true;
+                }
+
                 tx_total_out += out.nValue;
                 utxo_size_inc += GetSerializeSize(out, PROTOCOL_VERSION) + PER_UTXO_OVERHEAD;
             }
+        }
+
+        if (creates_p2wpkh_output) {
+            ++txs_creating_p2wpkh_outputs;
+        }
+
+        if (creates_p2wsh_output) {
+            ++txs_creating_p2wsh_outputs;
         }
 
         if (tx->IsCoinBase()) {
@@ -1994,12 +2040,52 @@ static UniValue getblockstats(const JSONRPCRequest& request)
 
         if (loop_inputs) {
             CAmount tx_total_in = 0;
+            bool spends_nested_p2wpkh_output = false;
+            bool spends_nested_p2wsh_output = false;
+            bool spends_native_p2wpkh_output = false;
+            bool spends_native_p2wsh_output = false;
             const auto& txundo = blockUndo.vtxundo.at(i - 1);
-            for (const Coin& coin: txundo.vprevout) {
+            for (size_t i = 0; i < tx->vin.size(); ++i) {
+                const CTxIn& in = tx->vin.at(i);
+                const Coin& coin = txundo.vprevout.at(i);
                 const CTxOut& prevoutput = coin.out;
+
+                // Check what kind of output is being spent..
+                CScript scriptPubKey = prevoutput.scriptPubKey;
+                if (in.SpendsNestedPayToWitnessPubKeyHashOutput(scriptPubKey)) {
+                    spends_nested_p2wpkh_output = true;
+                    ++nested_p2wpkh_outputs_spent;
+                } else if (in.SpendsNestedPayToWitnessScriptHashOutput(scriptPubKey)) {
+                    spends_nested_p2wsh_output = true;
+                    ++nested_p2wsh_outputs_spent;
+                } else if (in.SpendsNativePayToWitnessPubKeyHashOutput(scriptPubKey)) {
+                    spends_native_p2wpkh_output = true;
+                    ++native_p2wpkh_outputs_spent;
+                } else if (in.SpendsNativePayToWitnessScriptHashOutput(scriptPubKey)) {
+                    spends_native_p2wsh_output = true;
+                    ++native_p2wsh_outputs_spent;
+                }
 
                 tx_total_in += prevoutput.nValue;
                 utxo_size_inc -= GetSerializeSize(prevoutput, PROTOCOL_VERSION) + PER_UTXO_OVERHEAD;
+            }
+
+            // Sanity check: any transaction with a witness must have spent one of these SW output types.
+            if (tx->HasWitness()) {
+                assert(spends_native_p2wsh_output || spends_native_p2wpkh_output || spends_nested_p2wsh_output || spends_nested_p2wpkh_output);
+            }
+
+            if (spends_nested_p2wpkh_output) {
+                ++txs_spending_nested_p2wpkh_outputs;
+            }
+            if (spends_nested_p2wsh_output) {
+                ++txs_spending_nested_p2wsh_outputs;
+            }
+            if (spends_native_p2wpkh_output) {
+                ++txs_spending_native_p2wpkh_outputs;
+            }
+            if (spends_native_p2wsh_output) {
+                ++txs_spending_native_p2wsh_outputs;
             }
 
             CAmount txfee = tx_total_in - tx_total_out;
@@ -2059,6 +2145,18 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     ret_all.pushKV("txs", (int64_t)block.vtx.size());
     ret_all.pushKV("utxo_increase", outputs - inputs);
     ret_all.pushKV("utxo_size_inc", utxo_size_inc);
+    ret_all.pushKV("nested_p2wpkh_outputs_spent", nested_p2wpkh_outputs_spent);
+    ret_all.pushKV("nested_p2wsh_outputs_spent", nested_p2wsh_outputs_spent);
+    ret_all.pushKV("native_p2wpkh_outputs_spent", native_p2wpkh_outputs_spent);
+    ret_all.pushKV("native_p2wsh_outputs_spent", native_p2wsh_outputs_spent);
+    ret_all.pushKV("txs_spending_nested_p2wpkh_outputs", txs_spending_nested_p2wpkh_outputs);
+    ret_all.pushKV("txs_spending_nested_p2wsh_outputs", txs_spending_nested_p2wsh_outputs);
+    ret_all.pushKV("txs_spending_native_p2wpkh_outputs", txs_spending_native_p2wpkh_outputs);
+    ret_all.pushKV("txs_spending_native_p2wsh_outputs", txs_spending_native_p2wsh_outputs);
+    ret_all.pushKV("new_p2wpkh_outputs", new_p2wpkh_outputs);
+    ret_all.pushKV("new_p2wsh_outputs", new_p2wsh_outputs);
+    ret_all.pushKV("txs_creating_p2wpkh_outputs", txs_creating_p2wpkh_outputs);
+    ret_all.pushKV("txs_creating_p2wsh_outputs", txs_creating_p2wsh_outputs);
 
     if (do_all) {
         return ret_all;
