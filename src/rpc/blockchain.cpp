@@ -1879,6 +1879,7 @@ static UniValue getblockstats(const JSONRPCRequest& request)
             "  \"new_p2wsh_outputs\": xxxxx,   (numeric) The total number of new P2WSH outputs\n"
             "  \"txs_creating_p2wpkh_outputs\": xxxxx,   (numeric) The total number of transactions creating new P2WPKH outputs\n"
             "  \"txs_creating_p2wsh_outputs\": xxxxx,   (numeric) The total number of transactions new P2WSH outputs\n"
+            "  \"dust_bins\": xxxxx,   (numeric_array) The total number of outputs that are dust at several fee-rates\n"
             "}\n"
                 },
                 RPCExamples{
@@ -1973,6 +1974,10 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     int64_t txs_creating_p2wpkh_outputs = 0;
     int64_t txs_creating_p2wsh_outputs = 0;
 
+    const int NUM_DUST_BINS = 22;
+    int64_t dustbin_array[NUM_DUST_BINS] = {0};
+    const CFeeRate dust_fee_rates[NUM_DUST_BINS] = {CFeeRate(1*1000), CFeeRate(3*1000), CFeeRate(5*1000), CFeeRate(8*1000), CFeeRate(10*1000), CFeeRate(15*1000), CFeeRate(20*1000), CFeeRate(25*1000), CFeeRate(30*1000), CFeeRate(40*1000), CFeeRate(50*1000), CFeeRate(60*1000), CFeeRate(70*1000), CFeeRate(80*1000), CFeeRate(90*1000),  CFeeRate(100*1000), CFeeRate(150*1000),CFeeRate(200*1000),  CFeeRate(250*1000), CFeeRate(350*1000), CFeeRate(500*1000), CFeeRate(1000*1000)};
+
     for (size_t i = 0; i < block.vtx.size(); ++i) {
         const auto& tx = block.vtx.at(i);
         outputs += tx->vout.size();
@@ -1996,6 +2001,14 @@ static UniValue getblockstats(const JSONRPCRequest& request)
 
                 tx_total_out += out.nValue;
                 utxo_size_inc += GetSerializeSize(out, PROTOCOL_VERSION) + PER_UTXO_OVERHEAD;
+
+                // Check if output is dust at any of the set fee rates.
+                for (int64_t i = 0; i < NUM_DUST_BINS; i++) {
+                    if (IsDust(out, dust_fee_rates[i])) {
+                        ++dustbin_array[i];
+                        break;
+                    }
+                }
             }
         }
 
@@ -2115,6 +2128,11 @@ static UniValue getblockstats(const JSONRPCRequest& request)
         feerates_res.push_back(feerate_percentiles[i]);
     }
 
+    // If an output is dust at fee rate x s.t. x < y, then it is dust at y.
+    for (int64_t i = 0; i < NUM_DUST_BINS - 1; i++) {
+      dustbin_array[i+1] += dustbin_array[i];
+    }
+
     UniValue ret_all(UniValue::VOBJ);
     ret_all.pushKV("avgfee", (block.vtx.size() > 1) ? totalfee / (block.vtx.size() - 1) : 0);
     ret_all.pushKV("avgfeerate", total_weight ? (totalfee * WITNESS_SCALE_FACTOR) / total_weight : 0); // Unit: sat/vbyte
@@ -2157,6 +2175,11 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     ret_all.pushKV("new_p2wsh_outputs", new_p2wsh_outputs);
     ret_all.pushKV("txs_creating_p2wpkh_outputs", txs_creating_p2wpkh_outputs);
     ret_all.pushKV("txs_creating_p2wsh_outputs", txs_creating_p2wsh_outputs);
+    UniValue dust_res(UniValue::VARR);
+    for (int64_t i = 0; i < NUM_DUST_BINS; i++) {
+      dust_res.push_back(dustbin_array[i]);
+    }
+    ret_all.pushKV("dust_bins", dust_res);
 
     if (do_all) {
         return ret_all;
