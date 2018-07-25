@@ -1815,6 +1815,8 @@ static inline bool SetHasKeys(const std::set<T>& set, const Tk& key, const Args&
 
 // outpoint (needed for the utxo index) + nHeight + fCoinBase
 static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
+static constexpr int CONSOLIDATION_THRESHOLD = 3;
+static constexpr int BATCHING_THRESHOLD = 3; // If the transaction has at least 3 outputs, it's considered batching.
 
 static UniValue getblockstats(const JSONRPCRequest& request)
 {
@@ -1879,6 +1881,11 @@ static UniValue getblockstats(const JSONRPCRequest& request)
             "  \"new_p2wsh_outputs\": xxxxx,   (numeric) The total number of new P2WSH outputs\n"
             "  \"txs_creating_p2wpkh_outputs\": xxxxx,   (numeric) The total number of transactions creating new P2WPKH outputs\n"
             "  \"txs_creating_p2wsh_outputs\": xxxxx,   (numeric) The total number of transactions new P2WSH outputs\n"
+            "  \"txs_signalling_opt_in_rbf\": xxxxx,   (numeric) The total number of transactions that signal RBF\n"
+            "  \"txs_consolidating\": xxxxx,   (numeric) The total number of consolidating transactions (defined as at least 3 inputs and 1 output)\n"
+            "  \"outputs_consolidated\": xxxxx,   (numeric) The total number of outputs created by a consolidating transaction\n"
+            "  \"txs_batching\": xxxxx,   (numeric) The total number batching transactions (defined as at least 3 outputs)\n"
+            "  \"outcount_bins\": xxxxx,   (numeric_array) The numbers of transactions that have certain numbers of outputs\n"
             "  \"dust_bins\": xxxxx,   (numeric_array) The total number of outputs that are dust at several fee-rates\n"
             "}\n"
                 },
@@ -1973,18 +1980,44 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     int64_t new_p2wsh_outputs = 0;
     int64_t txs_creating_p2wpkh_outputs = 0;
     int64_t txs_creating_p2wsh_outputs = 0;
+    int64_t txs_signalling_opt_in_rbf = 0;
+    int64_t txs_consolidating = 0;
+    int64_t outputs_consolidated = 0;
+    int64_t txs_batching = 0;
 
-    const int NUM_DUST_BINS = 22;
+    // Batch ranges =  [(1), (2), (3-4), (5-9), (10-49), (50-99), (100+)]
+    constexpr int NUM_OUTCOUNT_BINS = 7;
+    int64_t output_count_bins[NUM_OUTCOUNT_BINS] = {0};
+    const int64_t out_counts[NUM_OUTCOUNT_BINS+1] = {1, 2, 3, 5, 10, 50, 100};
+
+    constexpr int NUM_DUST_BINS = 22;
     int64_t dustbin_array[NUM_DUST_BINS] = {0};
     const CFeeRate dust_fee_rates[NUM_DUST_BINS] = {CFeeRate(1*1000), CFeeRate(3*1000), CFeeRate(5*1000), CFeeRate(8*1000), CFeeRate(10*1000), CFeeRate(15*1000), CFeeRate(20*1000), CFeeRate(25*1000), CFeeRate(30*1000), CFeeRate(40*1000), CFeeRate(50*1000), CFeeRate(60*1000), CFeeRate(70*1000), CFeeRate(80*1000), CFeeRate(90*1000),  CFeeRate(100*1000), CFeeRate(150*1000),CFeeRate(200*1000),  CFeeRate(250*1000), CFeeRate(350*1000), CFeeRate(500*1000), CFeeRate(1000*1000)};
 
     for (size_t i = 0; i < block.vtx.size(); ++i) {
         const auto& tx = block.vtx.at(i);
-        outputs += tx->vout.size();
+        int64_t tx_outputs = tx->vout.size();
+        outputs += tx_outputs;
+
+        // Place number of outputs for this transaction into the corresponding bin.
+        for (int64_t i = 0; i < NUM_OUTCOUNT_BINS; i++) {
+          if (i == NUM_OUTCOUNT_BINS - 1) {
+              ++output_count_bins[i];
+              break;
+          }
+
+          if (tx_outputs >= out_counts[i] &&  tx_outputs < out_counts[i+1]) {
+              ++output_count_bins[i];
+              break;
+          }
+        }
+
+        if (tx_outputs >= BATCHING_THRESHOLD) {
+            ++txs_batching;
+        }
 
         bool creates_p2wpkh_output = false;
         bool creates_p2wsh_output = false;
-
         CAmount tx_total_out = 0;
         if (loop_outputs) {
             for (const CTxOut& out : tx->vout) {
@@ -2027,6 +2060,11 @@ static UniValue getblockstats(const JSONRPCRequest& request)
         inputs += tx->vin.size(); // Don't count coinbase's fake input
         total_out += tx_total_out; // Don't count coinbase reward
 
+        if (tx->vin.size() >= CONSOLIDATION_THRESHOLD) {
+            ++txs_consolidating;
+            outputs_consolidated += tx->vin.size();
+        }
+
         int64_t tx_size = 0;
         if (do_calculate_size) {
 
@@ -2057,6 +2095,7 @@ static UniValue getblockstats(const JSONRPCRequest& request)
             bool spends_nested_p2wsh_output = false;
             bool spends_native_p2wpkh_output = false;
             bool spends_native_p2wsh_output = false;
+            bool signals_opt_in_rbf = false;
             const auto& txundo = blockUndo.vtxundo.at(i - 1);
             for (size_t i = 0; i < tx->vin.size(); ++i) {
                 const CTxIn& in = tx->vin.at(i);
@@ -2079,8 +2118,17 @@ static UniValue getblockstats(const JSONRPCRequest& request)
                     ++native_p2wsh_outputs_spent;
                 }
 
+                // Copied from inner loop of CTransaction::SignalsOptInRBF
+                if (in.nSequence < std::numeric_limits<unsigned int>::max()-1) {
+                    signals_opt_in_rbf = true;
+                }
+
                 tx_total_in += prevoutput.nValue;
                 utxo_size_inc -= GetSerializeSize(prevoutput, PROTOCOL_VERSION) + PER_UTXO_OVERHEAD;
+            }
+
+            if (signals_opt_in_rbf) {
+              ++txs_signalling_opt_in_rbf;
             }
 
             // Sanity check: any transaction with a witness must have spent one of these SW output types.
@@ -2175,6 +2223,17 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     ret_all.pushKV("new_p2wsh_outputs", new_p2wsh_outputs);
     ret_all.pushKV("txs_creating_p2wpkh_outputs", txs_creating_p2wpkh_outputs);
     ret_all.pushKV("txs_creating_p2wsh_outputs", txs_creating_p2wsh_outputs);
+    ret_all.pushKV("txs_signalling_opt_in_rbf", txs_signalling_opt_in_rbf);
+    ret_all.pushKV("txs_consolidating", txs_consolidating);
+    ret_all.pushKV("outputs_consolidated", outputs_consolidated);
+    ret_all.pushKV("txs_batching", txs_batching);
+
+    UniValue outcount_res(UniValue::VARR);
+    for (int64_t i = 0; i < NUM_OUTCOUNT_BINS; i++) {
+      outcount_res.push_back(output_count_bins[i]);
+    }
+    ret_all.pushKV("output_count_bins", outcount_res);
+
     UniValue dust_res(UniValue::VARR);
     for (int64_t i = 0; i < NUM_DUST_BINS; i++) {
       dust_res.push_back(dustbin_array[i]);
