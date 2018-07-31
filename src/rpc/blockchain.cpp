@@ -1887,6 +1887,8 @@ static UniValue getblockstats(const JSONRPCRequest& request)
             "  \"txs_batching\": xxxxx,   (numeric) The total number batching transactions (defined as at least 3 outputs)\n"
             "  \"outcount_bins\": xxxxx,   (numeric_array) The numbers of transactions that have certain numbers of outputs\n"
             "  \"dust_bins\": xxxxx,   (numeric_array) The total number of outputs that are dust at several fee-rates\n"
+            "  \"mto_consolidations\": xxxxx,   (numeric) The total number of transactions with at least 3 inputs and exactly 1 output\n"
+            "  \"mto_output_count\": xxxxx,   (numeric) The total number of outputs spent in all mto_consolidation transactions\n"
             "}\n"
                 },
                 RPCExamples{
@@ -1985,6 +1987,11 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     int64_t outputs_consolidated = 0;
     int64_t txs_batching = 0;
 
+    std::vector<CTxDestination> high_consolidation_addrs;
+    std::vector<int64_t> cons_in_count;
+    int64_t many_to_one_consolidating_txs = 0;
+    int64_t many_to_one_consolidated_outputs = 0;
+
     // Batch ranges =  [(1), (2), (3-4), (5-9), (10-49), (50-99), (100+)]
     constexpr int NUM_OUTCOUNT_BINS = 7;
     int64_t output_count_bins[NUM_OUTCOUNT_BINS] = {0};
@@ -2063,6 +2070,12 @@ static UniValue getblockstats(const JSONRPCRequest& request)
         if (tx->vin.size() >= CONSOLIDATION_THRESHOLD) {
             ++txs_consolidating;
             outputs_consolidated += tx->vin.size();
+        }
+
+        // Look for transactions with high number of inputs and low outputs
+        if ((tx->vin.size() >= CONSOLIDATION_THRESHOLD) && tx->vout.size() == 1) {
+          ++many_to_one_consolidating_txs;
+          many_to_one_consolidated_outputs += tx->vin.size();
         }
 
         int64_t tx_size = 0;
@@ -2239,6 +2252,9 @@ static UniValue getblockstats(const JSONRPCRequest& request)
       dust_res.push_back(dustbin_array[i]);
     }
     ret_all.pushKV("dust_bins", dust_res);
+
+    ret_all.pushKV("mto_consolidations", many_to_one_consolidating_txs);
+    ret_all.pushKV("mto_output_count", many_to_one_consolidated_outputs);
 
     if (do_all) {
         return ret_all;
