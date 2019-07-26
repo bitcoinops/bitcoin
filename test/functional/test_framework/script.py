@@ -10,7 +10,10 @@ This file is modified from python-bitcoinlib.
 from .messages import CTransaction, CTxOut, sha256, hash256, uint256_from_str, ser_uint256, ser_string, CTxInWitness
 from .key import ECKey, ECPubKey, TaggedHash
 
+import binascii
 import hashlib
+import itertools
+import queue
 import struct
 
 from .bignum import bn2vch
@@ -795,3 +798,601 @@ def taproot_construct(pubkey, scripts=[]):
 
 def is_op_success(o):
     return o == 0x50 or o == 0x62 or o == 0x89 or o == 0x8a or o == 0x8d or o == 0x8e or (o >= 0x7e and o <= 0x81) or (o >= 0x83 and o <= 0x86) or (o >= 0x95 and o <= 0x99) or (o >= 0xbb and o <= 0xfe)
+
+def IsPayToPubkey(script):
+    pk = ECPubKey()
+    pk.set(script[1:34])
+    return pk.is_valid and len(script) == 35 and script[-1] == OP_CHECKSIG
+
+def IsCheckSigAdd(script):
+    if script[-1] == OP_EQUAL and isinstance(script[-2], int) and script[-3] == OP_CHECKSIGADD:
+        return True
+    else:
+        return False
+
+def ParseDesc(desc, tag, op, cl):
+    op_tag = tag+op
+    assert(desc[:len(op_tag)] == op_tag)
+    desc = desc[len(op_tag):-1]
+    depth = 0
+    for t in desc:
+        if t == op:
+            depth += 1
+        if t == cl:
+            depth -= 1
+    if depth == 0:
+        return desc
+    else:
+        # Malformed descriptor.
+        raise Exception
+
+class TapLeaf:
+    def __init__(self, script=CScript(), version=DEFAULT_TAPSCRIPT_VER):
+        self.version = version
+        self.script = script
+        self.miniscript = None
+        self.sat = None
+        self.keys = None # TODO: Remove.
+
+    def from_keys(self, keys):
+        if len(keys) == 1:
+            if keys[0].is_valid:
+                self.construct_pk(keys[0])
+            else:
+                raise Exception
+        elif len(keys) > 1:
+            self.construct_csa(len(keys), keys)
+        else:
+            raise Exception
+
+    # TODO: use raw constructor here.
+    def from_script(self, script):
+        if IsPayToPubkey(script):
+            self.keys = [script[1:34]]
+        elif IsCheckSigAdd(script):
+            self.keys = []
+            for op in script:
+                if isinstance(op, bytes):
+                    self.keys.append(ECPubKey())
+                    self.keys[-1].set(op)
+        self.script = script
+
+    def construct_pk(self, key): #ECPubKey
+        pk_node = miniscript.pk(key.get_bytes())
+        self._set_miniscript(miniscript.c(pk_node))
+        self.desc = TapLeaf._desc_serializer('pk',key.get_bytes().hex())
+
+    def construct_pkolder(self, key, n): #ECPubKey, int
+        pk_node = miniscript.pk(key.get_bytes())
+        older_node = miniscript.older(n)
+        v_c_pk_node = miniscript.v(miniscript.c(pk_node))
+        self._set_miniscript(miniscript.and_v(v_c_pk_node, older_node))
+        self.desc = TapLeaf._desc_serializer('pkolder', key.get_bytes().hex(), str(n))
+
+    def construct_pkhash(self, key, data): #ECPubKey, 20B, int
+        pk_node = miniscript.pk(key.get_bytes())
+        hash_node = miniscript.ripemd160(data)
+        v_c_pk_node = miniscript.v(miniscript.c(pk_node))
+        self._set_miniscript(miniscript.and_v(v_c_pk_node, hash_node))
+        self.desc = TapLeaf._desc_serializer('pkhash', key.get_bytes().hex(), data.hex())
+
+    def construct_pkhasholder(self, key, data, n): #ECPubKey, 20B, int
+        pk_node = miniscript.pk(key.get_bytes())
+        older_node = miniscript.older(n)
+        v_hash_node = miniscript.v(miniscript.ripemd160(data))
+        v_c_pk_node = miniscript.v(miniscript.c(pk_node))
+        self._set_miniscript(miniscript.and_v(v_c_pk_node, miniscript.and_v(v_hash_node, older_node)))
+        self.desc = TapLeaf._desc_serializer('pkhasholder', key.get_bytes().hex(), data.hex(),str(n))
+
+    def construct_csa(self, k, *args): #int, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        self._set_miniscript(thresh_csa_node)
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csa', str(k), *keys_string)
+
+    def construct_csaolder(self, n, k, *args):  #int, int, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        v_thresh_csa_node = miniscript.v(thresh_csa_node)
+        older_node = miniscript.older(n)
+        self._set_miniscript(miniscript.and_v(v_thresh_csa_node, older_node))
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csaolder', str(k), *keys_string, str(n))
+
+    def construct_csahash(self, data, k, *args): #int, 20B, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        v_thresh_csa_node = miniscript.v(thresh_csa_node)
+        hash_node = miniscript.ripemd160(data)
+        self._set_miniscript(miniscript.and_v(v_thresh_csa_node, hash_node))
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csahash', str(k), *keys_string, data.hex())
+
+    def construct_csahasholder(self, n, data, k, *args): #int, 20B, int, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        v_thresh_csa_node = miniscript.v(thresh_csa_node)
+        hash_node = miniscript.ripemd160(data)
+        v_hash_node = miniscript.v(hash_node)
+        older_node = miniscript.older(n)
+        self._set_miniscript(miniscript.and_v(v_thresh_csa_node, miniscript.and_v(v_hash_node, older_node)))
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csahasholder', str(k), *keys_string, data.hex(),str(n))
+
+    def _set_miniscript(self, miniscript):
+        self.miniscript = miniscript
+        self.script = CScript(self.miniscript.script)
+        self.sat = self.miniscript.sat_xy
+
+    @staticmethod
+    def _desc_serializer(tag, *args):
+        desc = 'ts(' + tag + '('
+        for arg in args[:-1]:
+            desc += arg + ','
+        desc += args[-1] + '))'
+        return desc
+
+    def from_desc(self,string):
+
+        string = ''.join(string.split())
+        tss = ParseDesc(string, 'ts', '(',')')
+
+        if tss[:3] == 'pk(':
+            expr_s = ParseDesc(tss, 'pk' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            self.construct_pk(pk)
+
+        elif tss[:8] == 'pkolder(':
+            expr_s = ParseDesc(tss, 'pkolder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            self.construct_pkolder(pk, int(args[1]))
+
+        elif tss[:7] == 'pkhash(':
+            expr_s = ParseDesc(tss, 'pkhash' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            data = bytes.fromhex(args[1])
+            self.construct_pkhash(pk, data)
+
+        elif tss[:12] == 'pkhasholder(':
+            expr_s = ParseDesc(tss, 'pkhasholder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            data = bytes.fromhex(args[1])
+            self.construct_pkhasholder(pk, data, int(args[2]))
+
+        elif tss[:4] == 'csa(':
+            expr_s = ParseDesc(tss, 'csa' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
+            pkv = []
+            for key_string in args[1:]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            self.construct_csa(k, *pkv)
+
+        elif tss[:9] == 'csaolder(':
+            expr_s = ParseDesc(tss, 'csaolder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
+            pkv = []
+            for key_string in args[1:-1]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            time = int(args[-1])
+            self.construct_csaolder(time, k, *pkv)
+
+        elif tss[:8] == 'csahash(':
+            expr_s = ParseDesc(tss, 'csahash' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
+            pkv = []
+            for key_string in args[1:-1]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            data = bytes.fromhex(args[-1])
+            self.construct_csahash(data, k, *pkv)
+
+        elif tss[:13] == 'csahasholder(':
+            expr_s = ParseDesc(tss, 'csahasholder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
+            pkv = []
+            for key_string in args[1:-2]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            data = bytes.fromhex(args[-2])
+            time = int(args[-1])
+            self.construct_csahasholder(time, data, k, *pkv)
+
+        elif tss[:4] =='raw(':
+            self.script = CScript(binascii.unhexlify(tss[4:-1]))
+
+        else:
+            raise Exception('Tapscript descriptor not recognized.')
+
+    @staticmethod
+    def _param_parser(expr_string):
+        args = []
+        idx_ = 0
+        expr_string_ = expr_string
+        for idx, ch in enumerate(expr_string):
+            if ch == ',':
+                args.append(expr_string[idx_:idx])
+                idx_ = idx+1
+                expr_string_ = expr_string[idx_:]
+        args.append(expr_string_)
+        return args
+
+    # TODO: Not nice, necessary for sorting priority queue.
+    def __lt__(self, other):
+        return True
+
+    def __gt__(self, other):
+        return True
+
+    @staticmethod
+    def generate_threshold_csa(n, pubkeys):
+        if n == 1 or len(pubkeys) <= n:
+            raise Exception
+        pubkeys_b = [pubkey.get_bytes() for pubkey in pubkeys]
+        pubkeys_b.sort()
+        pubkey_b_sets = list(itertools.combinations(iter(pubkeys_b), n))
+        tapscripts = []
+        for pubkey_b_set in pubkey_b_sets:
+            pubkey_set = []
+            for pubkey_b in pubkey_b_set:
+                pk = ECPubKey()
+                pk.set(pubkey_b)
+                pubkey_set.append(pk)
+            tapscript = TapLeaf()
+            tapscript.construct_csa(len(pubkey_set), *pubkey_set)
+            tapscripts.append(tapscript)
+        return tapscripts
+
+class TapTree:
+    def __init__(self):
+        self.root = Node()
+        self.key = ECPubKey()
+
+    def from_desc(self, desc):
+        desc = ''.join(desc.split())
+        pk = ECPubKey()
+        pk.set(binascii.unhexlify(desc[3:69]))
+        if len(desc)>71 and desc[:3] == 'tp(' and pk.is_valid and desc[69] == ',' and desc[-1] == ')':
+            self.key = pk
+            self._decode_tree(desc[70:-1], parent=self.root)
+        else:
+            raise Exception
+
+    # Tree construction from list(weight(int), TapScript)
+    def huffman_constructor(self, tuple_list):
+        p = queue.PriorityQueue()
+        for weight_tapleaf in tuple_list:
+            p.put(weight_tapleaf)
+        while p.qsize() > 1:
+            l, r = p.get(), p.get()
+            node = Node()
+            node.left, node.right = l[1], r[1]
+            p.put((l[0]+r[0], node))
+        self.root = p.get()[1]
+
+    def set_key(self, data):
+        self.key.set(data)
+
+    @property
+    def desc(self):
+        if self.key.is_valid and self.root!= None:
+            res = 'tp(' +  self.key.get_bytes().hex() + ','
+            res += TapTree._encode_tree(self.root)
+            res += ')'
+            return res
+        else:
+            # TODO: Exception message.
+            raise Exception
+
+    def construct(self):
+        ctrl, h = self._constructor(self.root)
+        tweak = TaggedHash("TapTweak", self.key.get_bytes() + h)
+        control_map = dict((script, GetVersionTaggedPubKey(self.key, version) + control) for version, script, control in ctrl)
+        tweaked = self.key.tweak_add(tweak)
+        return (CScript([OP_1, GetVersionTaggedPubKey(tweaked, TAPROOT_VER)]), tweak, control_map)
+
+    @staticmethod
+    def _constructor(node):
+        if isinstance(node, TapLeaf):
+            h = TaggedHash("TapLeaf", bytes([node.version & 0xfe]) + ser_string(node.script))
+            ctrl = [(node.version, node.script, bytes())]
+            return ctrl, h
+        if isinstance(node.left, TapLeaf):
+            h_l = TaggedHash("TapLeaf", bytes([node.left.version & 0xfe]) + ser_string(node.left.script))
+            ctrl_l = [(node.left.version, node.left.script, bytes())]
+        else:
+            ctrl_l, h_l  = TapTree._constructor(node.left)
+        if isinstance(node.right, TapLeaf):
+            h_r = TaggedHash("TapLeaf", bytes([node.right.version & 0xfe]) + ser_string(node.right.script))
+            ctrl_r = [(node.right.version, node.right.script, bytes())]
+        else:
+            ctrl_r, h_r = TapTree._constructor(node.right)
+
+        ctrl_l = [(version, script, ctrl + h_r) for version, script, ctrl in ctrl_l]
+        ctrl_r = [(version, script, ctrl + h_l) for version, script, ctrl in ctrl_r]
+        if h_r < h_l:
+            h_r, h_l = h_l, h_r
+        h = TaggedHash("TapBranch", h_l + h_r)
+        return (ctrl_l + ctrl_r , h)
+
+    @staticmethod
+    def _encode_tree(node):
+        string = '['
+        if isinstance(node, TapLeaf):
+            string += node.desc
+            string += ']'
+            return string
+        if isinstance(node.left, TapLeaf):
+            string += node.left.desc
+        else:
+            string += TapTree._encode_tree(node.left)
+        string += ','
+        if isinstance(node.right, TapLeaf):
+            string += node.right.desc
+        else:
+            string += TapTree._encode_tree(node.right)
+        string += ']'
+        return string
+
+    def _decode_tree(self, string, parent=None):
+        l, r = TapTree._parse_tuple(string)
+        if not r:
+            self.root = TapLeaf()
+            self.root.from_desc(l)
+            return
+        if (l[0] == '[' and l[-1] == ']'):
+            parent.left = Node()
+            self._decode_tree(l, parent=parent.left)
+        else:
+            parent.left = TapLeaf()
+            parent.left.from_desc(l)
+        if (r[0] == '[' and r[-1] == ']'):
+            parent.right = Node()
+            self._decode_tree(r, parent=parent.right)
+        else:
+            parent.right = TapLeaf()
+            parent.right.from_desc(r)
+
+    @staticmethod
+    def _parse_tuple(ts):
+        ts = ts[1:-1]
+        depth = 0
+        l, r = None, None
+        for idx, ch in enumerate(ts):
+            if depth == 0 and ch == ',':
+                l,r = ts[:idx], ts[idx+1:]
+                break
+            if ch == '[' or ch == '(':
+                depth += 1
+            if ch == ']' or ch == ')':
+                depth -= 1
+        if depth == 0 and (l and r):
+            return l, r
+        elif depth == 0:
+            return ts, ''
+        else:
+            # Malformed tuple.
+            raise Exception
+
+class Node(object):
+    # Internal Taptree Node.
+    def __init__(self, left=None, right=None):
+        self.left = left
+        self.right = right
+
+    # TODO: Not nice, but seems to be necessary for sorting by priority queue.
+    def __lt__(self, other):
+        return True
+
+    def __gt__(self, other):
+        return True
+
+# Miniscript Node.
+class node_type:
+    def __init__(self, script=False, nsat=False, sat_xy=False, sat_z=False, typ=False, corr=False, mal=False, children=False, childnum=None):
+        self._script = script
+        self._nsat = nsat
+        self._sat_xy = sat_xy
+        self._sat_z= sat_z
+        self._typ = typ
+        self._corr = corr
+        self._mal = mal
+        self.children = children # [x,y,z]
+
+        # Assert all corr/mal/child members are defined.
+        assert(all (key in corr(children).keys() for key in ('z','o','n','d','u')))
+        for _ , value in vars(self).items():
+            assert(value != None)
+        # assert(len(children)==3) # This doesn't hold with threshold.
+
+    def __getattr__(self,name):
+        attr = getattr(self, '_'+name)
+        if attr != None:
+            # All lambda's must accept children argument.
+            return attr(self.children)
+        else:
+            return None
+
+# Factory class to generate miniscript nodes.
+class miniscript:
+    @staticmethod
+    def decode(string):
+        tag, exprs = miniscript._parse(string)
+
+        # Return terminal expressions:
+        # ['pk','pk_h','older','after','sha256','hash256','ripemd160','hash160','1','0']:
+        if tag in ['pk','pk_h', 'older', 'ripemd160', 'thresh_csa']:
+
+            if tag in ['pk', 'pk_h']:
+                key_b = bytes.fromhex(exprs[0])
+                return getattr(miniscript, tag)(key_b)
+
+            elif tag in ['older']:
+                n = int(exprs[0])
+                return getattr(miniscript, tag)(n)
+
+            elif tag in ['ripemd160']:
+                digest = bytes.fromhex(exprs[0])
+                return getattr(miniscript, tag)(digest)
+
+            elif tag in ['thresh_csa']:
+                k = int(exprs[0])
+                keys = []
+                for key_string in exprs[1:]:
+                    key_data = bytes.fromhex(key_string)
+                    keys.append(key_data)
+                return getattr(miniscript, tag)(k, *keys)
+
+        child_nodes = []
+        for expr in exprs:
+            child_nodes.append(miniscript.decode(expr))
+        return getattr(miniscript, tag)(*child_nodes)
+
+    @staticmethod
+    def _parse(string):
+        # TODO: Handle single arg case.
+        string = ''.join(string.split())
+        depth = 0
+        tag = ''
+        exprs = []
+        for idx, ch in enumerate(string):
+            if ch == ':' and depth == 0:
+                return string[:idx], [string[idx+1:]]
+            if ch == '(':
+                depth += 1
+                if depth == 1:
+                    tag = string[:idx]
+                    prev_idx = idx
+            if ch == ')':
+                depth -= 1
+                if depth == 0:
+                    exprs.append(string[prev_idx+1:idx])
+            if depth == 1 and ch == ',':
+                exprs.append(string[prev_idx+1:idx])
+                prev_idx = idx
+        if depth == 0 and bool(tag) and bool(exprs):
+            return tag, exprs
+        else:
+            raise Exception('Malformed miniscript string.')
+
+    @staticmethod
+    def pk(key):
+        assert((key[0] in [0x02, 0x03]) or (key[0] not in [0x04, 0x06, 0x07]))
+        assert(len(key) == 33)
+        script = lambda x: [key]
+        nsat = lambda x: [0]
+        sat_xy = lambda x: [('sig', key)]
+        sat_z = lambda x: [False]
+        typ = lambda x: 'K' # Only one possible.
+        corr = lambda x: {'z': False,'o': True, 'n': True, 'd': True, 'u': True}
+        mal = lambda x: {'e': True,'f': False, 'm': True, 's': True}
+        children = [None, None, None] # Terminal.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def older(n):
+        assert(n >= 1 and n < 2**32)
+        script = lambda x: [CScriptNum(n), OP_CHECKSEQUENCEVERIFY]
+        nsat = lambda x: [False]
+        sat_xy = lambda x: []
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B'
+        corr = lambda x: {'z': True,'o': False, 'n': False, 'd': False, 'u': False}
+        mal = lambda x: {'e': False,'f': True, 'm': True, 's': False}
+        children = [None, None, None] # Terminal.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def ripemd160(data):
+        assert(len(data) == 20)
+        script = lambda x: [OP_SIZE, CScriptNum(32), OP_EQUALVERIFY, OP_RIPEMD160, data, OP_EQUAL]
+        nsat = lambda x: [b'\x00'*32] # Not non-malleably.
+        sat_xy = lambda x: [('preimage', data)]
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B'
+        corr = lambda x: {'z': False,'o': True, 'n': True, 'd': True, 'u': True}
+        mal = lambda x: {'e': False,'f': False, 'm': True, 's': False}
+        children = [None, None, None] # Terminal.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def c(expr):
+        script = lambda x: x[0].script + [OP_CHECKSIG]
+        nsat = lambda x: x[0].nsat
+        sat_xy = lambda x: x[0].sat_xy
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B' if x[0].typ == 'K' else False
+        corr = lambda x: {'z': False,'o': x[0].corr['o'], 'n': x[0].corr['n'], 'd': x[0].corr['d'], 'u': True}
+        mal = lambda x: {'f': False, 'e': x[0].mal['e'], 'm': x[0].mal['m'], 's': x[0].mal['s']}
+        children = [expr, None, None]
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def v(expr):
+        script = lambda x: x[0].script + [OP_VERIFY]
+        nsat = lambda x: [False]
+        sat_xy = lambda x: x[0].sat_xy
+        sat_z = lambda x: [False]
+        typ = lambda x: 'V' if x[0].typ == 'B' else False
+        corr = lambda x: {'z': x[0].corr['z'],'o': x[0].corr['o'], 'n': x[0].corr['n'], 'd': False, 'u': False}
+        mal = lambda x: {'f': True, 'e': False, 'm': x[0].mal['m'], 's': x[0].mal['s']}
+        children = [expr, None, None]
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def and_v(expr_l, expr_r):
+        script = lambda x: x[0].script + x[1].script
+        nsat = lambda x: [False]
+        sat_xy = lambda x: x[1].sat_xy + x[0].sat_xy
+        sat_z = lambda x: [False]
+        typ = lambda x:\
+            'B' if (x[0].typ == 'V' and x[1].typ == 'B') else\
+            'K' if (x[0].typ == 'V' and x[1].typ == 'K') else\
+            'V' if (x[0].typ == 'V' and x[1].typ == 'V') else False
+        corr = lambda x: {\
+            'z': bool(x[0].corr['z']*x[1].corr['z']),\
+            'o': bool(x[0].corr['z']*x[1].corr['o']+x[0].corr['o']*x[1].corr['z']),\
+            'n': bool(x[0].corr['n']+x[0].corr['z']*x[1].corr['n']),\
+            'd': False,\
+            'u': False}
+        mal = lambda x: {\
+            'f': bool(x[0].mal['f']*x[1].mal['f']),\
+            'e': False,\
+            'm':bool(x[0].mal['m']*x[1].mal['m']),\
+            's': bool(x[0].mal['s']+x[1].mal['s'])}
+        children = [expr_l, expr_r, None]
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod # TODO:
+    def thresh_csa(k, *args): #arg[0] = k, arg[i>0] = expr_i
+        assert(k > 0 and k <= len(args) and len(args) > 1) # Requires more than 1 pk.
+        for key in args:
+            assert(len(key) == 33)
+            assert(key[0] in [0x02, 0x03]) or (key[0] not in [0x04, 0x06, 0x07])
+        script = lambda x: [args[0], OP_CHECKSIG] + list(itertools.chain.from_iterable([[args[i], OP_CHECKSIGADD] for i in range(1,len(args))])) + [k, OP_NUMEQUAL]
+        nsat = lambda x: [0x00]*len(args)
+        sat_xy = lambda x: [('sig', args[i]) for i in range(0,len(args))][::-1] # TODO: ('thresh(n)', [('sig', (0x02../0x00)), ('sig', (0x02../0x00))])
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B'
+        corr = lambda x: {'z': False,'o': False, 'n': False, 'd': True, 'u': True}
+        mal = lambda x: {'f': False, 'e': True, 'm': True, 's': True}
+        children = [None, None, None] # Terminal expression.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
