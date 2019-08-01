@@ -372,6 +372,26 @@ class ECPubKey():
             return False
         return True
 
+    def __add__(self, pk):
+        """Adds two ECPubKey points."""
+        assert(self.valid)
+        assert(pk.valid)
+        ret = ECPubKey()
+        ret.p = SECP256K1.add(pk.p, self.p)
+        ret.valid = True
+        ret.compressed = self.compressed
+        return ret
+
+    def __mul__(self, private_key):
+        """Multiplies ECPubKey point with scalar data."""
+        assert(self.valid)
+        assert(private_key.secret < SECP256K1_ORDER and private_key.secret is not None)
+        ret = ECPubKey()
+        ret.p = SECP256K1.mul([(self.p, private_key.secret)])
+        ret.valid = True
+        ret.compressed = self.compressed
+        return ret
+
     def tweak_add(self, tweak):
         assert(self.valid)
         assert(len(tweak) == 32)
@@ -386,6 +406,14 @@ class ECPubKey():
         ret.valid = True
         ret.compressed = self.compressed
         return ret
+
+    def mul(self, data):
+        """Multiplies ECPubKey point with scalar data."""
+        assert(self.valid)
+        assert(len(data) == 32)
+        key = ECKey()
+        key.set(data, True)
+        return self * key
 
 class ECKey():
     """A secp256k1 private key"""
@@ -414,6 +442,43 @@ class ECKey():
         """Retrieve the 32-byte representation of this key."""
         assert(self.valid)
         return self.secret.to_bytes(32, 'big')
+
+    def __add__(self, key):
+        """Add key secrets. Returns compressed key."""
+        assert(key.secret > 0 and key.secret < SECP256K1_ORDER)
+        assert(self.valid == True)
+        ret_data = ((self.secret + key.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
+        ret = ECKey()
+        ret.set(ret_data, True)
+        return ret
+
+    def __mul__(self, key):
+        """Multiply private keys. Returns compressed key."""
+        if isinstance(key, ECKey):
+            assert(key.secret > 0 and key.secret < SECP256K1_ORDER)
+            assert(self.valid == True)
+            ret_data = ((self.secret * key.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
+            ret = ECKey()
+            ret.set(ret_data, True)
+            return ret
+        elif isinstance(key, ECPubKey):
+            return key * self
+
+    def add(self, data):
+        """Add key to scalar data. Returns compressed key."""
+        key = ECKey()
+        key.set(data, True)
+        return self + key
+
+    def mul(self, data):
+        """Multiply key secret with scalar data. Returns compressed key."""
+        key = ECKey()
+        key.set(data, True)
+        return self * key
+
+    def negate(self):
+        assert(self.valid)
+        self.secret = SECP256K1_ORDER - self.secret
 
     @property
     def is_valid(self):
