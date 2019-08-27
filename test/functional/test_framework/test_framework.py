@@ -33,6 +33,7 @@ from .util import (
     sync_mempools,
 )
 
+OPTECH_TAG = "https://github.com/bitcoinops/bitcoin/releases/tag/Taproot_V0.1.5"
 
 class TestStatus(Enum):
     PASSED = 1
