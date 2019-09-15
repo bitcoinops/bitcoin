@@ -560,7 +560,7 @@ class ECKey():
         sb = s.to_bytes((s.bit_length() + 8) // 8, 'big')
         return b'\x30' + bytes([4 + len(rb) + len(sb), 2, len(rb)]) + rb + bytes([2, len(sb)]) + sb
 
-    def sign_schnorr(self, msg, k_key = None):
+    def sign_schnorr(self, msg, nonce=None):
         """Construct a bip-schnorr compatible signature with this key and an optional, pre-determined nonce."""
         assert(self.valid)
         assert(self.compressed)
@@ -570,11 +570,12 @@ class ECKey():
         if not pk.is_positive:
             x = SECP256K1_ORDER - x
 
-        if k_key is None:
-            kp = int.from_bytes(TaggedHash("BIPSchnorrDerive", x.to_bytes(32, 'big') + msg), 'big') % SECP256K1_ORDER
+        if nonce is not None:
+            nonce_bytes = nonce.get_bytes()
         else:
-            kp = int.from_bytes(k_key.get_bytes(), 'big') % SECP256K1_ORDER
-        assert(kp != 0)
+            nonce_bytes = TaggedHash("BIPSchnorrDerive", x.to_bytes(32, 'big') + msg)
+        kp = int.from_bytes(nonce_bytes, 'big') % SECP256K1_ORDER
+        assert kp != 0
         R = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, kp)]))
         k = kp if jacobi_symbol(R[1], SECP256K1_FIELD_SIZE) == 1 else SECP256K1_ORDER - kp
         e = int.from_bytes(TaggedHash("BIPSchnorr", R[0].to_bytes(32, 'big') + pk.get_xonly_bytes() + msg), 'big') % SECP256K1_ORDER
@@ -597,10 +598,10 @@ class ECKey():
 def generate_schnorr_nonce():
     """Generate a random valid bip-schnorr nonce.
 
-    See https://github.com/sipa/bips/blob/bip-schnorr/bip-schnorr.mediawiki.
+    See https://github.com/bitcoinops/bips/blob/v0.1/bip-schnorr.mediawiki#Signing.
     This implementation ensures the y-coordinate of the nonce point is a quadratic residue modulo the field size."""
     kp = random.randrange(1, SECP256K1_ORDER)
-    assert(kp != 0)
+    assert kp != 0
     R = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, kp)]))
     k = kp if jacobi_symbol(R[1], SECP256K1_FIELD_SIZE) == 1 else SECP256K1_ORDER - kp
     k_key = ECKey()
