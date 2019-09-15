@@ -372,20 +372,29 @@ class ECPubKey():
             return False
         return True
 
-    def __add__(self, pk):
+    def __add__(self, other):
         """Adds two ECPubKey points."""
-        assert(self.valid)
-        assert(pk.valid)
+        assert isinstance(other, ECPubKey)
+        assert self.valid
+        assert other.valid
         ret = ECPubKey()
-        ret.p = SECP256K1.add(pk.p, self.p)
+        ret.p = SECP256K1.add(other.p, self.p)
         ret.valid = True
         ret.compressed = self.compressed
         return ret
 
+    def __radd__(self, other):
+        """Allows this ECPubKey to be added to 0 for sum()"""
+        if other == 0:
+            return self
+        else:
+            return self + other
+
     def __mul__(self, private_key):
-        """Multiplies ECPubKey point with scalar data."""
-        assert(self.valid)
-        assert(private_key.secret < SECP256K1_ORDER and private_key.secret is not None)
+        """Multiplies ECPubKey point with a ECKey scalar."""
+        assert isinstance(private_key, ECKey)
+        assert self.valid
+        assert private_key.secret < SECP256K1_ORDER and private_key.secret is not None
         ret = ECPubKey()
         ret.p = SECP256K1.mul([(self.p, private_key.secret)])
         ret.valid = True
@@ -409,11 +418,11 @@ class ECPubKey():
 
     def mul(self, data):
         """Multiplies ECPubKey point with scalar data."""
-        assert(self.valid)
-        assert(len(data) == 32)
-        key = ECKey()
-        key.set(data, True)
-        return self * key
+        assert self.valid
+        assert len(data) == 32
+        other = ECKey()
+        other.set(data, True)
+        return self * other
 
 class ECKey():
     """A secp256k1 private key"""
@@ -443,41 +452,52 @@ class ECKey():
         assert(self.valid)
         return self.secret.to_bytes(32, 'big')
 
-    def __add__(self, key):
+    def __add__(self, other):
         """Add key secrets. Returns compressed key."""
-        assert(key.secret > 0 and key.secret < SECP256K1_ORDER)
-        assert(self.valid == True)
-        ret_data = ((self.secret + key.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
+        assert isinstance(other, ECKey)
+        assert other.secret > 0 and other.secret < SECP256K1_ORDER
+        assert self.valid is True
+        ret_data = ((self.secret + other.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
         ret = ECKey()
         ret.set(ret_data, True)
         return ret
 
-    def __mul__(self, key):
-        """Multiply private keys. Returns compressed key."""
-        if isinstance(key, ECKey):
-            assert(key.secret > 0 and key.secret < SECP256K1_ORDER)
-            assert(self.valid == True)
-            ret_data = ((self.secret * key.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
+    def __radd__(self, other):
+        """Allows this ECKey to be added to 0 for sum()"""
+        if other == 0:
+            return self
+        else:
+            return self + other
+
+    def __mul__(self, other):
+        """Multiply a private key by another private key or multiply a public key by a private key. Returns compressed key."""
+        if isinstance(other, ECKey):
+            assert other.secret > 0 and other.secret < SECP256K1_ORDER
+            assert self.valid is True
+            ret_data = ((self.secret * other.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
             ret = ECKey()
             ret.set(ret_data, True)
             return ret
-        elif isinstance(key, ECPubKey):
-            return key * self
+        elif isinstance(other, ECPubKey):
+            return other * self
+        else:
+            raise TypeError
 
     def add(self, data):
         """Add key to scalar data. Returns compressed key."""
-        key = ECKey()
-        key.set(data, True)
-        return self + key
+        other = ECKey()
+        other.set(data, True)
+        return self + other
 
     def mul(self, data):
         """Multiply key secret with scalar data. Returns compressed key."""
-        key = ECKey()
-        key.set(data, True)
-        return self * key
+        other = ECKey()
+        other.set(data, True)
+        return self * other
 
     def negate(self):
-        assert(self.valid)
+        """Negate a private key."""
+        assert self.valid
         self.secret = SECP256K1_ORDER - self.secret
 
     @property
