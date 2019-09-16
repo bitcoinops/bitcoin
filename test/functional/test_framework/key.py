@@ -401,6 +401,17 @@ class ECPubKey():
         ret.compressed = self.compressed
         return ret
 
+    def __sub__(self, other):
+        """Subtract one point from another"""
+        assert isinstance(other, ECPubKey)
+        assert self.valid
+        assert other.valid
+        ret = ECPubKey()
+        ret.p = SECP256K1.add(self.p, SECP256K1.negate(other.p))
+        ret.valid = True
+        ret.compressed = self.compressed
+        return ret
+
     def tweak_add(self, tweak):
         assert(self.valid)
         assert(len(tweak) == 32)
@@ -468,6 +479,16 @@ class ECKey():
             return self
         else:
             return self + other
+
+    def __sub__(self, other):
+        """Subtract key secrets. Returns compressed key."""
+        assert isinstance(other, ECKey)
+        assert other.secret > 0 and other.secret < SECP256K1_ORDER
+        assert self.valid is True
+        ret_data = ((self.secret - other.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
+        ret = ECKey()
+        ret.set(ret_data, True)
+        return ret
 
     def __mul__(self, other):
         """Multiply a private key by another private key or multiply a public key by a private key. Returns compressed key."""
