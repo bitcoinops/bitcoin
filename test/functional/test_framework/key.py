@@ -463,6 +463,15 @@ class ECKey():
         assert(self.valid)
         return self.secret.to_bytes(32, 'big')
 
+    def as_int(self):
+        return self.secret
+
+    def from_int(self, secret, compressed=True):
+        self.valid = (secret > 0 and secret < SECP256K1_ORDER)
+        if self.valid:
+            self.secret = secret
+            self.compressed = compressed
+
     def __add__(self, other):
         """Add key secrets. Returns compressed key."""
         assert isinstance(other, ECKey)
