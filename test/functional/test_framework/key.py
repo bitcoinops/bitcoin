@@ -255,6 +255,7 @@ class ECPubKey():
                 self.valid = False
         else:
             self.valid = False
+        return self
 
     def set_xonly(self, data):
         assert(len(data) == 32)
@@ -449,10 +450,12 @@ class ECKey():
         if self.valid:
             self.secret = secret
             self.compressed = compressed
+        return self
 
     def generate(self, compressed=True):
         """Generate a random private key (compressed or uncompressed)."""
         self.set(random.randrange(1, SECP256K1_ORDER).to_bytes(32, 'big'), compressed)
+        return self
 
     def negate(self):
         """Negate this private key."""
