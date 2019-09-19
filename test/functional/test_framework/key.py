@@ -71,6 +71,15 @@ def modsqrt(a, p):
         return sqrt
     return None
 
+def int_or_bytes(s):
+    "Convert 32-bytes to int while accepting also int and returning it as is."
+    if isinstance(s, bytes):
+        assert(len(s) == 32)
+        s = int.from_bytes(s, 'big')
+    elif not isinstance(s, int):
+        raise TypeError
+    return s
+
 class EllipticCurve:
     def __init__(self, p, a, b):
         """Initialize elliptic curve y^2 = x^3 + a*x + b over GF(p)."""
@@ -415,8 +424,7 @@ class ECPubKey():
 
     def tweak_add(self, tweak):
         assert(self.valid)
-        assert(len(tweak) == 32)
-        t = int.from_bytes(tweak, 'big')
+        t = int_or_bytes(tweak)
         if t >= SECP256K1_ORDER:
             return None
         tweaked = SECP256K1.affine(SECP256K1.mul([(self.p, 1), (SECP256K1_G, t)]))
@@ -431,7 +439,6 @@ class ECPubKey():
     def mul(self, data):
         """Multiplies ECPubKey point with scalar data."""
         assert self.valid
-        assert len(data) == 32
         other = ECKey()
         other.set(data, True)
         return self * other
@@ -443,9 +450,9 @@ class ECKey():
         self.valid = False
 
     def set(self, secret, compressed):
-        """Construct a private key object with given 32-byte secret and compressed flag."""
-        assert(len(secret) == 32)
-        secret = int.from_bytes(secret, 'big')
+        """Construct a private key object from either 32-bytes or an int secret and a compressed flag."""
+        secret = int_or_bytes(secret)
+
         self.valid = (secret > 0 and secret < SECP256K1_ORDER)
         if self.valid:
             self.secret = secret
@@ -596,8 +603,7 @@ class ECKey():
     def tweak_add(self, tweak):
         """Return a tweaked version of this private key."""
         assert(self.valid)
-        assert(len(tweak) == 32)
-        t = int.from_bytes(tweak, 'big')
+        t = int_or_bytes(tweak)
         if t >= SECP256K1_ORDER:
             return None
         tweaked = (self.secret + t) % SECP256K1_ORDER
