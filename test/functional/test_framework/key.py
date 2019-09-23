@@ -492,7 +492,10 @@ class ECKey():
         elif isinstance(other, ECPubKey):
             return other * self
         else:
-            raise TypeError
+            # ECKey().set() checks that other is an `int` or `bytes`
+            assert self.valid
+            second = ECKey().set(other, self.compressed)
+            return self * second
 
     def add(self, data):
         """Add key to scalar data. Returns compressed key."""
