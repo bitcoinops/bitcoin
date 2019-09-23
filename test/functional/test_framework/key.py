@@ -268,6 +268,12 @@ class ECPubKey():
     def is_valid(self):
         return self.valid
 
+    def get_y(self):
+        return SECP256K1.affine(self)[1]
+
+    def get_x(self):
+        return SECP256K1.affine(self)[0]
+
     def get_bytes(self):
         assert(self.valid)
         p = SECP256K1.affine(self.p)
