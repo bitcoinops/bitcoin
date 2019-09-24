@@ -375,13 +375,19 @@ class ECPubKey():
         else:
             return self + other
 
-    def __mul__(self, private_key):
+    def __mul__(self, other):
         """Multiplies ECPubKey point with a ECKey scalar."""
-        assert isinstance(private_key, ECKey)
-        assert self.valid
-        assert private_key.secret < SECP256K1_ORDER and private_key.secret is not None
+        if isinstance(other, ECKey):
+            assert self.valid
+            assert other.secret is not None
+            multiplier = other.secret
+        else:
+            # int_or_bytes checks that other is `int` or `bytes`
+            multiplier = int_or_bytes(other)
+
+        assert multiplier < SECP256K1_ORDER
         ret = ECPubKey()
-        ret.p = SECP256K1.mul([(self.p, private_key.secret)])
+        ret.p = SECP256K1.mul([(self.p, multiplier)])
         ret.valid = True
         ret.compressed = self.compressed
         return ret
