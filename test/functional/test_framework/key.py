@@ -288,10 +288,10 @@ class ECPubKey():
         return jacobi_symbol(self.p[1] * self.p[2], SECP256K1_FIELD_SIZE) == 1
 
     def get_y(self):
-        return SECP256K1.affine(self)[1]
+        return SECP256K1.affine(self.p)[1]
 
     def get_x(self):
-        return SECP256K1.affine(self)[0]
+        return SECP256K1.affine(self.p)[0]
 
     def get_bytes(self):
         assert(self.valid)
