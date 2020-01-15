@@ -70,7 +70,7 @@ class taptree_constructor(BitcoinTestFramework):
             for tapleaf in tapleafs:
                 control = control_map[tapleaf.script]
                 version = control[0] & 0xfe
-                int_pubkey_b = bytes([(control[0] & 0x01) + 2]) + control[1:33]
+                int_pubkey_b = control[1:33]
                 m = len(control[33:]) // 32
                 k = TaggedHash("TapLeaf", bytes([version]) + ser_string(tapleaf.script))
                 for i in range(m):
@@ -128,7 +128,7 @@ class taptree_constructor(BitcoinTestFramework):
                 taproot_spend_tx.wit.vtxinwit.append(CTxInWitness())
 
                 # 65B signature required for non-zero hash_type.
-                if htv_idx is not 0:
+                if htv_idx != 0:
                     sig += htv[htv_idx].to_bytes(1, 'big')
                 taproot_spend_tx.wit.vtxinwit[0].scriptWitness.stack = [sig] + [tapleaf_to_spend.script, control_map[tapleaf_to_spend.script]]
                 taproot_spend_str = taproot_spend_tx.serialize().hex()

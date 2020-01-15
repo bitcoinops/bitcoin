@@ -34,7 +34,7 @@ class tapleaf_csa_desc(BitcoinTestFramework):
             sec = ECKey()
             sec.generate()
             pkv.append(sec.get_pubkey())
-            sec_map[pkv[-1].get_bytes()] = sec
+            sec_map[pkv[-1].get_xonly_bytes()] = sec
 
         # Hash & Preimage.
         preimage = bytes.fromhex('f6dea1fafb5a58df766747091dd70eafe50119687f5e56137d054b39ce8645fa')
@@ -51,13 +51,13 @@ class tapleaf_csa_desc(BitcoinTestFramework):
         # Construct tapleafs from descriptor strings
         tapleafs = []
 
-        desc1 = 'ts(csa({},{},{},{}))'.format(thresh_n, pkv[0].get_bytes().hex(), pkv[1].get_bytes().hex(), pkv[2].get_bytes().hex())
+        desc1 = 'ts(csa({},{},{},{}))'.format(thresh_n, pkv[0].get_xonly_bytes().hex(), pkv[1].get_xonly_bytes().hex(), pkv[2].get_xonly_bytes().hex())
         tapleaf1 = TapLeaf()
         tapleaf1.from_desc(desc1)
         tapleafs.append(tapleaf1)
         assert(tapleaf1.desc == desc1)
 
-        desc2 = 'ts(csahash({},{},{},{},{}))'.format(thresh_n, pkv[0].get_bytes().hex(), pkv[1].get_bytes().hex(), pkv[2].get_bytes().hex(), ripemd160_digest)
+        desc2 = 'ts(csahash({},{},{},{},{}))'.format(thresh_n, pkv[0].get_xonly_bytes().hex(), pkv[1].get_xonly_bytes().hex(), pkv[2].get_xonly_bytes().hex(), ripemd160_digest)
         tapleaf2 = TapLeaf()
         tapleaf2.from_desc(desc2)
         tapleafs.append(tapleaf2)
@@ -66,13 +66,13 @@ class tapleaf_csa_desc(BitcoinTestFramework):
         # Index to mark beginning of timelocked tapscripts in tapleafs array.
         delayed_tapscripts_idx = 2
 
-        desc3 = 'ts(csaolder({},{},{},{},{}))'.format(thresh_n, pkv[0].get_bytes().hex(), pkv[1].get_bytes().hex(), pkv[2].get_bytes().hex(), delay)
+        desc3 = 'ts(csaolder({},{},{},{},{}))'.format(thresh_n, pkv[0].get_xonly_bytes().hex(), pkv[1].get_xonly_bytes().hex(), pkv[2].get_xonly_bytes().hex(), delay)
         tapleaf3 = TapLeaf()
         tapleaf3.from_desc(desc3)
         tapleafs.append(tapleaf3)
         assert(tapleaf3.desc == desc3)
 
-        desc4 = 'ts(csahasholder({},{},{},{},{},{}))'.format(thresh_n, pkv[0].get_bytes().hex(), pkv[1].get_bytes().hex(), pkv[2].get_bytes().hex(), ripemd160_digest, delay)
+        desc4 = 'ts(csahasholder({},{},{},{},{},{}))'.format(thresh_n, pkv[0].get_xonly_bytes().hex(), pkv[1].get_xonly_bytes().hex(), pkv[2].get_xonly_bytes().hex(), ripemd160_digest, delay)
         tapleaf4 = TapLeaf()
         tapleaf4.from_desc(desc4)
         tapleafs.append(tapleaf4)
@@ -157,7 +157,7 @@ class tapleaf_csa_desc(BitcoinTestFramework):
                 )
             else:
                 assert_equal(
-                    [{'txid': taproot_spend_tx.rehash(), 'allowed': False, 'reject-reason': '64: non-BIP68-final'}],
+                    [{'txid': taproot_spend_tx.rehash(), 'allowed': False, 'reject-reason': 'non-BIP68-final'}],
                     self.nodes[0].testmempoolaccept([taproot_spend_str])
                 )
                 delayed_txns.append(taproot_spend_tx)

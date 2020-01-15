@@ -19,6 +19,7 @@ from .key import (
     SECP256K1_G,
     SECP256K1_ORDER,
     jacobi_symbol,
+    TaggedHash,
 )
 
 def generate_musig_key(pubkey_list):
@@ -54,11 +55,14 @@ def sign_musig(priv_key, k_key, R_musig, P_musig, msg):
     assert priv_key.compressed
     assert len(msg) == 32
     assert k_key is not None and k_key.secret != 0
-    Rm = SECP256K1.affine(R_musig.p)
-    assert jacobi_symbol(Rm[1], SECP256K1_FIELD_SIZE) == 1
-    R = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, k_key.secret)]))
-    e = int.from_bytes(hashlib.sha256(Rm[0].to_bytes(32, 'big') + P_musig.get_bytes() + msg).digest(), 'big') % SECP256K1_ORDER
-    return R[0].to_bytes(32, 'big') + ((k_key.secret + e * priv_key.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
+    if not P_musig.is_positive:
+        priv_key.negate()
+
+    assert R_musig.is_positive
+    R = k_key.get_pubkey()
+    
+    e = int.from_bytes(TaggedHash("BIPSchnorr", R_musig.get_xonly_bytes() + P_musig.get_xonly_bytes() + msg), 'big') % SECP256K1_ORDER
+    return R.get_xonly_bytes() + ((k_key.secret + e * priv_key.secret) % SECP256K1_ORDER).to_bytes(32, 'big')
 
 def aggregate_musig_signatures(sigs):
     """Construct valid Schnorr signature from individually generated musig signatures."""

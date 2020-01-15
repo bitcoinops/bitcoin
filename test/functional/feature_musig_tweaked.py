@@ -53,9 +53,8 @@ class key_musig_tweaked(BitcoinTestFramework):
             pk_musig_tweaked = pk_musig.tweak_add(tweak)
 
             # Create Segwit V1 Output.
-            pk_musig_tweaked_data = pk_musig_tweaked.get_bytes()
-            pk_musig_tweaked_data_v1 = bytes([pk_musig_tweaked_data[0] & 1]) + pk_musig_tweaked_data[1:]
-            segwit_address = program_to_witness(1, pk_musig_tweaked_data_v1)
+            pk_musig_tweaked_data = pk_musig_tweaked.get_xonly_bytes()
+            segwit_address = program_to_witness(1, pk_musig_tweaked_data)
 
             # Send funds to musig public key (V1 Segwit Output)
             txid = self.nodes[0].sendtoaddress(segwit_address, balance / 100000)
@@ -68,7 +67,7 @@ class key_musig_tweaked(BitcoinTestFramework):
             index = 0
             outputs = tx.vout
             output = outputs[index]
-            while (output.scriptPubKey != CScript([OP_1, pk_musig_tweaked_data_v1])):
+            while (output.scriptPubKey != CScript([OP_1, pk_musig_tweaked_data])):
                 index += 1
                 output = outputs[index]
             output_value = output.nValue
@@ -115,7 +114,7 @@ class key_musig_tweaked(BitcoinTestFramework):
                 sigs.append(signature)
             sig_agg = aggregate_musig_signatures(sigs)
 
-            if hash_idx is not 0:
+            if hash_idx != 0:
                 sig_agg += hash_types[hash_idx].to_bytes(1, 'big')
 
             # Construct transaction witness.

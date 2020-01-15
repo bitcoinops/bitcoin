@@ -48,8 +48,7 @@ class key_musig(BitcoinTestFramework):
                 keys_c.append((private_c, public_c))
 
             # Create Segwit V1 Output.
-            pk_musig_data = pk_musig.get_bytes()
-            pk_musig_data_v1 = bytes([pk_musig_data[0] & 1]) + pk_musig_data[1:]
+            pk_musig_data_v1 = pk_musig.get_xonly_bytes()
             segwit_address = program_to_witness(1, pk_musig_data_v1)
 
             # Send funds to musig public key (V1 Segwit Output)
@@ -107,7 +106,7 @@ class key_musig(BitcoinTestFramework):
                 signature = sign_musig(private_c, nonce_map[public_c], R_agg, pk_musig, sighash)
                 sigs.append(signature)
             sig_agg = aggregate_musig_signatures(sigs)
-            if hash_idx is not 0:
+            if hash_idx != 0:
                 sig_agg += hash_types[hash_idx].to_bytes(1, 'big')
 
             # Construct transaction witness.
